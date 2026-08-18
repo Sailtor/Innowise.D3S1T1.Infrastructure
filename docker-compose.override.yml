@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# Local-development overrides.
+#
+# Compose loads this automatically on top of docker-compose.yml, so a plain
+# `docker compose up` picks it up. To run the base stack without these extras:
+#
+#   docker compose -f docker-compose.yml up -d
+# ---------------------------------------------------------------------------
+
+services:
+  # Expose the broker's AMQP port so you can point a locally-run service
+  # (F5 from Visual Studio) at the containerised RabbitMQ.
+  rabbitmq:
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+
+  # Expose SQL Server so you can attach SSMS / Azure Data Studio / sqlcmd.
+  #   Server: localhost,${MSSQL_PORT}   User: sa   Password: ${MSSQL_SA_PASSWORD}
+  mssql:
+    ports:
+      - "${MSSQL_PORT:-1433}:1433"
+
+  # Chattier logs while developing: MassTransit publish/consume and the
+  # generated EF Core SQL.
+  ingestor:
+    environment:
+      Logging__LogLevel__Default: ${LOG_LEVEL:-Debug}
+      Logging__LogLevel__MassTransit: Debug
+      Logging__LogLevel__Microsoft.AspNetCore: Information
+
+  processor:
+    environment:
+      Logging__LogLevel__Default: ${LOG_LEVEL:-Debug}
+      Logging__LogLevel__MassTransit: Debug
+      Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command: Information
+      Logging__LogLevel__Microsoft.AspNetCore: Information
+
+  # The weak API is meant to misbehave — keep its own logging quiet so the
+  # ingestor's retry/circuit-breaker output stays readable.
+  weakapp:
+    environment:
+      Logging__LogLevel__Default: Information
