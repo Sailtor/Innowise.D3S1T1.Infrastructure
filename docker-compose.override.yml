@@ -35,6 +35,14 @@ services:
       Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command: Information
       Logging__LogLevel__Microsoft.AspNetCore: Information
 
+  # The Gateway logs through Serilog, so its levels live under Serilog:*
+  # rather than Logging:LogLevel:* like the other two services.
+  gateway:
+    environment:
+      Serilog__MinimumLevel__Default: ${LOG_LEVEL:-Debug}
+      Serilog__MinimumLevel__Override__Microsoft__AspNetCore: Information
+      Serilog__MinimumLevel__Override__Microsoft__EntityFrameworkCore__Database__Command: Information
+
   # The weak API is meant to misbehave — keep its own logging quiet so the
   # ingestor's retry/circuit-breaker output stays readable.
   weakapp:

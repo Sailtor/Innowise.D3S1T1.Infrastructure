@@ -7,9 +7,10 @@
 #   mssql      MS SQL Server (Developer edition)     -> internal, see override
 #   ingestor   polls weakapp, publishes to RabbitMQ  -> :${INGESTOR_PORT}
 #   processor  consumes RabbitMQ, persists to MS SQL -> :${PROCESSOR_PORT}
+#   gateway    GraphQL read API over MS SQL          -> :${GRAPHQL_PORT}/graphql
 #
-# The GraphQL gateway, notification service and frontend are not implemented
-# yet; ready-to-use stubs are at the bottom of this file (commented out).
+# The notification service and frontend are not implemented yet; ready-to-use
+# stubs are at the bottom of this file (commented out).
 #
 # Service images are built from the sibling repositories, so all four repos
 # must be cloned next to each other:
@@ -17,6 +18,7 @@
 #   D3S1T1/
 #     Innowise.D3S1T1.DataIngestor/
 #     Innowise.D3S1T1.DataProcessor/
+#     Innowise.D3S1T1.Gateway/
 #     Innowise.D3S1T1.Infrastructure/   <-- you are here
 #     Innowise.D3S1T1.WeakApp/
 #
@@ -167,35 +169,66 @@ services:
     networks: [d3s1t1]
     restart: unless-stopped
 
+  # -------------------------------------------------------------------------
+  # GraphQL API Gateway (HotChocolate) — read-only over MS SQL, serves the FE.
+  #
+  # Unlike the processor, this image restores nothing from the private GitHub
+  # Packages feed, so it takes no `github_token` build secret.
+  # -------------------------------------------------------------------------
+  gateway:
+    build:
+      context: ../Innowise.D3S1T1.Gateway
+      dockerfile: src/Gateway.AppHost/Dockerfile
+      args:
+        BUILD_CONFIGURATION: ${BUILD_CONFIGURATION:-Release}
+    image: d3s1t1/gateway:local
+    container_name: d3s1t1-gateway
+    depends_on:
+      mssql:
+        condition: service_healthy
+      processor:
+        condition: service_started      # processor owns the EF migrations
+    environment:
+      # Development also serves the Nitro IDE at /graphql and the / -> /graphql
+      # redirect; GraphQL:AllowIntrospection is governed separately.
+      ASPNETCORE_ENVIRONMENT: Development
+      # Development otherwise means the human-readable console template. In a
+      # container the reader is `docker logs` and, later, a collector - so keep
+      # the compact-JSON console here even though the environment is Development.
+      Serilog__UseJsonConsole: "true"
+      # HTTP only in local dev; the app deliberately never calls
+      # UseHttpsRedirection(), so there is nothing to redirect to.
+      ASPNETCORE_URLS: http://+:8080
+      # Read-only consumer of the schema the processor migrates. Same server and
+      # database as ConnectionStrings__DataProcessorDb above, different key.
+      ConnectionStrings__MetricsDb: >-
+        Server=mssql,1433;Database=${MSSQL_DATABASE:-DataProcessor};User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+      Cors__AllowedOrigins__0: http://localhost:${FRONTEND_PORT:-3000}
+    ports:
+      - "${GRAPHQL_PORT:-5003}:8080"    # /graphql + Nitro UI
+    # /health runs the metrics-db check, so this gates on the database actually
+    # being queryable. The .NET runtime image ships no curl or wget, but it does
+    # ship bash — hence the /dev/tcp redirection instead of an HTTP client.
+    # CMD (not CMD-SHELL): /bin/sh in this image is dash, which has no /dev/tcp.
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8080 &&
+          printf 'GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          head -n 1 <&3 | grep -q ' 200 '
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [d3s1t1]
+    restart: unless-stopped
+
   # =========================================================================
   # NOT IMPLEMENTED YET — uncomment as each service lands.
   # =========================================================================
-
-  # GraphQL API Gateway (HotChocolate) — reads from MS SQL, serves the FE.
-  # graphql-api:
-  #   build:
-  #     context: ../Innowise.D3S1T1.GraphQLApi
-  #     dockerfile: src/GraphQLApi.AppHost/Dockerfile
-  #     args:
-  #       BUILD_CONFIGURATION: ${BUILD_CONFIGURATION:-Release}
-  #     secrets:
-  #       - github_token
-  #   image: d3s1t1/graphql-api:local
-  #   container_name: d3s1t1-graphql-api
-  #   depends_on:
-  #     mssql:
-  #       condition: service_healthy
-  #     processor:
-  #       condition: service_started      # processor owns the EF migrations
-  #   environment:
-  #     ASPNETCORE_ENVIRONMENT: Development
-  #     ASPNETCORE_URLS: http://+:8080
-  #     ConnectionStrings__DataProcessorDb: >-
-  #       Server=mssql,1433;Database=${MSSQL_DATABASE:-DataProcessor};User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
-  #   ports:
-  #     - "${GRAPHQL_PORT:-5003}:8080"    # /graphql + Nitro/Banana Cake Pop UI
-  #   networks: [d3s1t1]
-  #   restart: unless-stopped
 
   # Notification Service (SignalR) — pushes real-time updates to the FE.
   # notification-api:
@@ -229,7 +262,8 @@ services:
   #   image: d3s1t1/frontend:local
   #   container_name: d3s1t1-frontend
   #   depends_on:
-  #     - graphql-api
+  #     gateway:
+  #       condition: service_healthy
   #   environment:
   #     # Browser-side URLs, so they must be host-reachable, not compose DNS.
   #     VITE_GRAPHQL_URL: http://localhost:${GRAPHQL_PORT:-5003}/graphql
