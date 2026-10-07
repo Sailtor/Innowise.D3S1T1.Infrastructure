@@ -226,6 +226,38 @@ services:
     networks: [d3s1t1]
     restart: unless-stopped
 
+  # -------------------------------------------------------------------------
+  # Frontend (Angular SSR + Apollo) — dashboards and charts over the gateway.
+  # -------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ../Innowise.D3S1T1.Frontend
+      dockerfile: Dockerfile
+    image: d3s1t1/frontend:local
+    container_name: d3s1t1-frontend
+    depends_on:
+      gateway:
+        condition: service_healthy
+    environment:
+      # Container-to-container: the SSR server's own fetches never go through the
+      # published host port. The browser's own GraphQL calls are baked in at build
+      # time instead (environment.prod.ts in that repo), since they run on the
+      # developer's host, not inside this network.
+      GATEWAY_GRAPHQL_URL: http://gateway:8080/graphql
+      # @angular/ssr validates the inbound Host header against this allowlist
+      # (hostname only, no port - see its own URL-parsing) and 400s everything
+      # otherwise, the healthcheck below included. "localhost" covers every
+      # published-port variant, since the port is stripped before comparison.
+      NG_ALLOWED_HOSTS: localhost
+    ports:
+      - "${FRONTEND_PORT:-3000}:4000"
+    # No healthcheck: override here - the image's own Dockerfile already declares one
+    # (unlike gateway, this runtime ships node, so no bash/dev/tcp workaround is needed),
+    # and compose silently overriding it would mean the same probe living in two files
+    # kept in sync by hand. `docker compose ps` reads it straight from the image.
+    networks: [d3s1t1]
+    restart: unless-stopped
+
   # =========================================================================
   # NOT IMPLEMENTED YET — uncomment as each service lands.
   # =========================================================================
@@ -251,25 +283,6 @@ services:
   #     RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}
   #   ports:
   #     - "${NOTIFICATION_PORT:-5004}:8080"
-  #   networks: [d3s1t1]
-  #   restart: unless-stopped
-
-  # Frontend (React/Angular + Apollo) — dashboards and charts.
-  # frontend:
-  #   build:
-  #     context: ../Innowise.D3S1T1.Frontend
-  #     dockerfile: Dockerfile
-  #   image: d3s1t1/frontend:local
-  #   container_name: d3s1t1-frontend
-  #   depends_on:
-  #     gateway:
-  #       condition: service_healthy
-  #   environment:
-  #     # Browser-side URLs, so they must be host-reachable, not compose DNS.
-  #     VITE_GRAPHQL_URL: http://localhost:${GRAPHQL_PORT:-5003}/graphql
-  #     VITE_SIGNALR_URL: http://localhost:${NOTIFICATION_PORT:-5004}/hubs/metrics
-  #   ports:
-  #     - "${FRONTEND_PORT:-3000}:80"
   #   networks: [d3s1t1]
   #   restart: unless-stopped
 
