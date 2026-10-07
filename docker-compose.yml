@@ -293,6 +293,10 @@ services:
       # The browser's SignalR client connects directly to this service, not through
       # the gateway - so it needs the same frontend-origin allowlist gateway has.
       Cors__AllowedOrigins__0: http://localhost:${FRONTEND_PORT:-3000}
+      # Also allow ng serve's default dev-server origin directly (not through this
+      # compose stack's frontend container) - SignalR's negotiate/WebSocket handshake
+      # is browser-origin, so it needs this regardless of how the frontend is served.
+      Cors__AllowedOrigins__1: http://localhost:4200
     ports:
       - "${NOTIFICATION_PORT:-5004}:8080"    # /hubs/metrics
     # Liveness only - this service has no DB/dependency to report readiness on (see
