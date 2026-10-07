@@ -13,11 +13,7 @@ Local-development orchestration for the D3S1T1 microservices stack.
 | `processor` | `d3s1t1-processor` | http://localhost:5002 | Consumes `metric-readings-processor`, persists to MS SQL, owns the EF Core migrations |
 | `gateway` | `d3s1t1-gateway` | http://localhost:5003/graphql | Read-only GraphQL API over MS SQL (HotChocolate); Nitro IDE at the same URL |
 | `frontend` | `d3s1t1-frontend` | http://localhost:3000 | Angular SSR dashboard — latest values, readings table, aggregation charts over the gateway |
-
-Not implemented yet, so present only as a commented-out stub at the bottom of
-`docker-compose.yml`: **notification service / SignalR** (`:5004`). Uncomment
-that block as the service lands — the env wiring and `depends_on` edges are
-already filled in.
+| `notifications` | `d3s1t1-notifications` | http://localhost:5004/hubs/metrics | SignalR push (new readings + threshold alerts), independent RabbitMQ consumer — no frontend client wired up to it yet |
 
 ## Prerequisites
 
@@ -32,14 +28,15 @@ already filled in.
     Innowise.D3S1T1.Frontend/
     Innowise.D3S1T1.Gateway/
     Innowise.D3S1T1.Infrastructure/   <-- this repo, run compose from here
+    Innowise.D3S1T1.Notifications/
     Innowise.D3S1T1.WeakApp/
   ```
 
-* A **GitHub PAT with `read:packages`**. The `DataProcessor` image restores
-  `DataIngestor.Contracts` from the private `nuget.pkg.github.com/sailtor`
-  feed; its Dockerfile reads the token as a BuildKit secret named
-  `github_token`. It is the only image that needs one — the gateway consumes no
-  private packages, so its build takes no secret.
+* A **GitHub PAT with `read:packages`**. The `DataProcessor` and `Notifications`
+  images both restore `DataIngestor.Contracts` from the private
+  `nuget.pkg.github.com/sailtor` feed; their Dockerfiles read the token as a
+  BuildKit secret named `github_token`. The gateway and frontend consume no
+  private packages, so their builds take no secret.
 
 ## Run it
 
@@ -48,7 +45,7 @@ cp .env.example .env
 # then put your PAT in .env  ->  GITHUB_TOKEN=ghp_xxxxxxxx
 
 docker compose up -d --build
-docker compose logs -f ingestor processor gateway frontend
+docker compose logs -f ingestor processor gateway notifications frontend
 ```
 
 `.env` is git-ignored (`*.env` in `.gitignore`); `.env.example` is the tracked

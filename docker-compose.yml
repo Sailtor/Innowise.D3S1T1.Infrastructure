@@ -2,24 +2,25 @@
 # Innowise.D3S1T1 — local development stack
 #
 # Brings up the whole system on one bridge network:
-#   weakapp    unstable external API (provided)      -> :${WEAKAPP_PORT}
-#   rabbitmq   message queue + management UI         -> :${RABBITMQ_MGMT_PORT}
-#   mssql      MS SQL Server (Developer edition)     -> internal, see override
-#   ingestor   polls weakapp, publishes to RabbitMQ  -> :${INGESTOR_PORT}
-#   processor  consumes RabbitMQ, persists to MS SQL -> :${PROCESSOR_PORT}
-#   gateway    GraphQL read API over MS SQL          -> :${GRAPHQL_PORT}/graphql
+#   weakapp       unstable external API (provided)      -> :${WEAKAPP_PORT}
+#   rabbitmq      message queue + management UI         -> :${RABBITMQ_MGMT_PORT}
+#   mssql         MS SQL Server (Developer edition)     -> internal, see override
+#   ingestor      polls weakapp, publishes to RabbitMQ  -> :${INGESTOR_PORT}
+#   processor     consumes RabbitMQ, persists to MS SQL -> :${PROCESSOR_PORT}
+#   gateway       GraphQL read API over MS SQL          -> :${GRAPHQL_PORT}/graphql
+#   notifications SignalR push over RabbitMQ            -> :${NOTIFICATION_PORT}/hubs/metrics
+#   frontend      Angular SSR dashboard over the gateway -> :${FRONTEND_PORT}
 #
-# The notification service and frontend are not implemented yet; ready-to-use
-# stubs are at the bottom of this file (commented out).
-#
-# Service images are built from the sibling repositories, so all four repos
+# Service images are built from the sibling repositories, so all six repos
 # must be cloned next to each other:
 #
 #   D3S1T1/
 #     Innowise.D3S1T1.DataIngestor/
 #     Innowise.D3S1T1.DataProcessor/
+#     Innowise.D3S1T1.Frontend/
 #     Innowise.D3S1T1.Gateway/
 #     Innowise.D3S1T1.Infrastructure/   <-- you are here
+#     Innowise.D3S1T1.Notifications/
 #     Innowise.D3S1T1.WeakApp/
 #
 # Usage:  cp .env.example .env  &&  docker compose up -d --build
@@ -258,33 +259,60 @@ services:
     networks: [d3s1t1]
     restart: unless-stopped
 
-  # =========================================================================
-  # NOT IMPLEMENTED YET — uncomment as each service lands.
-  # =========================================================================
-
-  # Notification Service (SignalR) — pushes real-time updates to the FE.
-  # notification-api:
-  #   build:
-  #     context: ../Innowise.D3S1T1.NotificationApi
-  #     dockerfile: src/NotificationApi.AppHost/Dockerfile
-  #     secrets:
-  #       - github_token
-  #   image: d3s1t1/notification-api:local
-  #   container_name: d3s1t1-notification-api
-  #   depends_on:
-  #     rabbitmq:
-  #       condition: service_healthy
-  #   environment:
-  #     ASPNETCORE_ENVIRONMENT: Development
-  #     ASPNETCORE_URLS: http://+:8080
-  #     RabbitMQ__Host: rabbitmq
-  #     RabbitMQ__VirtualHost: ${RABBITMQ_VHOST:-/}
-  #     RabbitMQ__Username: ${RABBITMQ_USER:-guest}
-  #     RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}
-  #   ports:
-  #     - "${NOTIFICATION_PORT:-5004}:8080"
-  #   networks: [d3s1t1]
-  #   restart: unless-stopped
+  # -------------------------------------------------------------------------
+  # Notifications — SignalR push to the FE. Consumes "metric-readings-notifications",
+  # its own queue bound to the same fanout exchange "metric-readings-processor" is
+  # bound to, so it runs independently of the processor's consumption. No database.
+  #
+  # Its Dockerfile restores from the same private GitHub Packages feed as the
+  # processor, so the build needs the same github_token BuildKit secret.
+  # -------------------------------------------------------------------------
+  notifications:
+    build:
+      context: ../Innowise.D3S1T1.Notifications
+      dockerfile: src/Notifications.AppHost/Dockerfile
+      args:
+        BUILD_CONFIGURATION: ${BUILD_CONFIGURATION:-Release}
+      secrets:
+        - github_token
+    image: d3s1t1/notifications:local
+    container_name: d3s1t1-notifications
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      # Container-to-container reader is `docker logs` - compact JSON even in
+      # Development, same reasoning as the gateway service above.
+      Serilog__UseJsonConsole: "true"
+      RabbitMQ__Host: rabbitmq
+      RabbitMQ__VirtualHost: ${RABBITMQ_VHOST:-/}
+      RabbitMQ__Username: ${RABBITMQ_USER:-guest}
+      RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}
+      # The browser's SignalR client connects directly to this service, not through
+      # the gateway - so it needs the same frontend-origin allowlist gateway has.
+      Cors__AllowedOrigins__0: http://localhost:${FRONTEND_PORT:-3000}
+    ports:
+      - "${NOTIFICATION_PORT:-5004}:8080"    # /hubs/metrics
+    # Liveness only - this service has no DB/dependency to report readiness on (see
+    # NOTIFICATION_SERVICE_PLAN.md Phase 3). Same /dev/tcp technique as gateway's
+    # healthcheck above: the aspnet runtime image ships bash but no curl/wget.
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8080 &&
+          printf 'GET /health/live HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          head -n 1 <&3 | grep -q ' 200 '
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [d3s1t1]
+    restart: unless-stopped
 
 networks:
   d3s1t1:
